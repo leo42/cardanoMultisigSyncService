@@ -1,0 +1,18 @@
+version: "3"
+
+services:
+  syncservice:
+    env:
+      - MONGO_CONNECTION_STRING="mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=secrets/mongo.pem";
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      web:
+        aliases:
+          - syncservice
+    ports:
+      - "3001:3003"
+    volumes:
+      - ../broclan/secrets:/usr/src/app/secrets:ro
+    restart: always
