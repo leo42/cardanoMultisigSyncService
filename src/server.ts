@@ -1,6 +1,6 @@
 const express = require('express');
 const fs = require('fs');
-var crypt = require("crypto");
+import * as crypto from 'crypto';
 const app = express();
 const http = require('http');
 const { Server } = require("socket.io");
@@ -9,10 +9,10 @@ const { MongoClient } = require("mongodb");
 import * as CardanoWasm from "@dcspark/cardano-multiplatform-lib-nodejs";
 const MS = require('@emurgo/cardano-message-signing-nodejs');
 const cors = require('cors');
-const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://localhost:27017/";
+//const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://localhost:27017/";
 
 
-//const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=secrets/mongo.pem";
+const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=secrets/mongo.pem"
 const client = new MongoClient(uri,{
   retryWrites: true
 });
@@ -43,16 +43,25 @@ app.post('/api/transaction', function(req, res) {
   try{
     const data = req.body
     const tx = CardanoWasm.Transaction.from_cbor_hex( data.tx )
+    const txBody = tx.body();
     const txWallet = walletHash(data.wallet)
-    const signerAddedwitness =  CardanoWasm.TransactionWitnessSet.from_cbor_hex( String(data.sigAdded) )
+    const txBodyBytes = txBody.to_canonical_cbor_bytes();
+    const txBodyHash = crypto.createHash('sha256').update(txBodyBytes).digest();
+
+    // Convert the hash to a Uint8Array
+    const txBodyHashArray = new Uint8Array(txBodyHash);
+
+    const signerAddedwitness =  CardanoWasm.TransactionWitnessSet.from_cbor_hex(data.sigAdded)
     const sigAddedSigner = signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().hash().to_hex()!;
 
-
-
-    if(!signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().verify( tx.body().to_canonical_cbor_bytes(), signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)){
+    
+    console.log( tx.body().to_cbor_bytes(), signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)
+    if(!signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().verify(txBodyHashArray, signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)){
       console.log('Invalid signature');
       return
     }
+
+
 
 
 
@@ -174,7 +183,7 @@ io.on('connection', (socket ) => {
             subscribeToWallets( socket,  data.wallets )            
             findNewWallets(user.PubkeyHash, socket )
           }else{
-            verification[socket.id] = { state: "Challenge" , challenge_string: stringToHex("challenge_" + (crypt.randomBytes(36).toString('hex')))}
+            verification[socket.id] = { state: "Challenge" , challenge_string: stringToHex("challenge_" + (crypto.randomBytes(36).toString('hex')))}
             socket.emit('authentication_challenge', {challenge: verification[socket.id].challenge_string})
           }
     }).catch((err) => {
@@ -191,7 +200,8 @@ io.on('connection', (socket ) => {
     const { challenge_string } = verification[socket.id];
     try{
       const PubkeyHash =  verify( address, challenge_string, signature)
-      const authenticationToken = crypt.randomBytes(36).toString('hex')
+      const authenticationToken = crypto.randomBytes(36).toString('hex')
+
 
       users.findOneAndUpdate( {PubkeyHash: PubkeyHash}, { $set : { PubkeyHash: PubkeyHash , authenticationToken: authenticationToken , issueTime : Date.now(), lastLogin: Date.now() }}, {upsert: true}).then((user) => {
         if (user){
@@ -322,27 +332,36 @@ function stringToHex(str) {
 };
 
 const verifyAddress = (address: string, addressCose: CardanoWasm.Address, publicKeyCose: CardanoWasm.PublicKey) => {
+  console.log("Verifying address", address, addressCose.to_bech32(), publicKeyCose.hash().to_hex())
+
   const checkAddress = CardanoWasm.Address.from_bech32(address);
-  if (addressCose.to_bech32() !== checkAddress.to_bech32()) return false;
+  if (addressCose.to_bech32() !== checkAddress.to_bech32()) 
+    {
+      console.log("Address bench32 mismatch")
+      return false;
+    }
   // check if BaseAddress
   try {
     const baseAddress = CardanoWasm.BaseAddress.from_address(addressCose);
-    //reconstruct address
-    const paymentKeyHash = publicKeyCose.hash().to_hex();
-    const stakeKeyHash = baseAddress!.stake().as_pub_key()!.to_hex();
-    const reconstructedAddress = CardanoWasm.BaseAddress.new(
-      checkAddress.network_id(),
-      CardanoWasm.Credential.from_cbor_hex(paymentKeyHash),
-      CardanoWasm.Credential.from_cbor_hex(stakeKeyHash)
 
-    );
-    if (
-      checkAddress.to_bech32() !== reconstructedAddress.to_address().to_bech32()
+    //reconstruct address
+    const paymentKeyHash = publicKeyCose.hash();
+
+    if (checkAddress.payment_cred()?.to_canonical_cbor_hex()  !== CardanoWasm.Credential.new_pub_key(paymentKeyHash).to_canonical_cbor_hex()
+      || checkAddress.staking_cred()?.to_canonical_cbor_hex() !== baseAddress!.stake().to_canonical_cbor_hex()
     )
+
+
+    {
+      console.log("Address reconstructed mismatch")
       return false;
+    }
+
 
     return true;
-  } catch (e) {}
+  } catch (e) {
+    console.log("Address mismatch catch 1", e.message)
+  }
   // check if RewardAddress
   try {
     //reconstruct address
@@ -354,11 +373,17 @@ const verifyAddress = (address: string, addressCose: CardanoWasm.Address, public
     if (
       checkAddress.to_bech32() !== reconstructedAddress.to_address().to_bech32()
     )
-
+    {
+      console.log("Address reconstructed mismatch 2")
       return false;
+    }
+
 
     return true;
-  } catch (e) {}
+  } catch (e) {
+    console.log("Address mismatch", e.message)
+  }
+  console.log("Address mismatch expired")
   return false;
 };
 
@@ -483,7 +508,8 @@ function walletHash(wallet) {
 
   const cleanWallet = JSON.parse(JSON.stringify(wallet));
   removeName(cleanWallet)
- return crypt.createHash('sha256').update(JSON.stringify(cleanWallet)).digest('hex');
+ return crypto.createHash('sha256').update(JSON.stringify(cleanWallet)).digest('hex');
+
 }
 
 
