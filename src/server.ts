@@ -1,4 +1,3 @@
-
 const express = require('express');
 const fs = require('fs');
 var crypt = require("crypto");
@@ -7,7 +6,7 @@ const http = require('http');
 const { Server } = require("socket.io");
 const axios = require('axios');
 const { MongoClient } = require("mongodb");
-const CardanoWasm  = require("@dcspark/cardano-multiplatform-lib-nodejs");
+import CardanoWasm from "@dcspark/cardano-multiplatform-lib-nodejs";
 const MS = require('@emurgo/cardano-message-signing-nodejs');
 const cors = require('cors');
 const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://127.0.0.1:27017";
@@ -42,14 +41,20 @@ app.post('/api/wallet', function(req, res) {
 app.post('/api/transaction', function(req, res) {
   try{
     const data = req.body
-    const tx = CardanoWasm.Transaction.from_bytes( Buffer.from(data.tx, 'hex') )
+    const tx = CardanoWasm.Transaction.from_cbor_hex( data.tx )
     const txWallet = walletHash(data.wallet)
-    const signerAddedwitness =  CardanoWasm.TransactionWitnessSet.from_bytes( Buffer.from(String(data.sigAdded), 'hex') )
-    const sigAddedSigner = signerAddedwitness.vkeys().get(0).vkey().public_key().hash().to_hex();
-    if(!signerAddedwitness.vkeys().get(0).vkey().public_key().verify(  CardanoWasm.hash_transaction(tx.body()).to_bytes(), signerAddedwitness.vkeys().get(0).signature())){
+    const signerAddedwitness =  CardanoWasm.TransactionWitnessSet.from_cbor_hex( String(data.sigAdded) )
+    const sigAddedSigner = signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().hash().to_hex()!;
+
+
+
+    if(!signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().verify( tx.body().to_canonical_cbor_bytes(), signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)){
       console.log('Invalid signature');
       return
     }
+
+
+
 
   
     
@@ -64,7 +69,7 @@ app.post('/api/transaction', function(req, res) {
       const membersToUpdate = required_signers.filter((member) => member !== sigAddedSigner).concat(existingMembersToUpdate);
       const signatures = existingSignatures.hasOwnProperty(sigAddedSigner) ? existingSignatures : {...existingSignatures, [sigAddedSigner]: data.sigAdded};
       // if the transaction exist update the signatures and add to the membersToUpdate list
-      transactions.updateOne( {hash: CardanoWasm.hash_transaction(tx.body()).to_hex()}, { $set : { hash:  CardanoWasm.hash_transaction(tx.body()).to_hex() , transaction :  Buffer.from(tx.to_bytes(), 'hex').toString('hex') , signatures: signatures ,  requiredSigners : tx.body().to_js_value().required_signers , membersToUpdate:membersToUpdate  , lastUpdate : Date.now(), wallet: txWallet }}, {upsert: true})
+      transactions.updateOne( {hash: CardanoWasm.hash_transaction(tx.body()).to_hex()}, { $set : { hash:  CardanoWasm.hash_transaction(tx.body()).to_hex() , transaction :  tx.to_canonical_cbor_hex() , signatures: signatures ,  requiredSigners : tx.body().to_js_value().required_signers , membersToUpdate:membersToUpdate  , lastUpdate : Date.now(), wallet: txWallet }}, {upsert: true})
     })
     }catch(e){
         console.log(e)
@@ -238,8 +243,8 @@ app.get('/api', function(req, res) {
 //use express to submit a new wallet into the database 
 
 
-let getMemebers = function (json){
-  let members = []
+let getMemebers = function (json : any){
+  let members: string[] = [];
   if(json.type == "sig"){
     return [json.keyHash]
   }else if(json.type === "any" || json.type === "all" || json.type === "at_least"){
@@ -265,7 +270,7 @@ const verify = (address, payload, walletSig) => {
     .headers()
     .protected()
     .deserialized_headers();
-  const addressCose =CardanoWasm.Address.from_bytes(
+  const addressCose =CardanoWasm.Address.from_raw_bytes(
     protectedHeaders.header(MS.Label.new_text('address')).as_bytes()
   );
   const publicKeyCose = CardanoWasm.PublicKey.from_bytes( keyHeaders );
@@ -273,7 +278,7 @@ const verify = (address, payload, walletSig) => {
   if (!verifyAddress(address, addressCose, publicKeyCose))
    throw new Error('Could not verify because of address mismatch');
 
-  const signature =CardanoWasm.Ed25519Signature.from_bytes(coseSign1.signature());
+  const signature =CardanoWasm.Ed25519Signature.from_raw_bytes(coseSign1.signature());
   const data = coseSign1.signed_data().to_bytes();
   if ( publicKeyCose.verify(data, signature))
       return  publicKeyCose.hash().to_hex()
@@ -291,19 +296,20 @@ function stringToHex(str) {
   return hex;
 };
 
-const verifyAddress = (address, addressCose, publicKeyCose) => {
+const verifyAddress = (address: string, addressCose: CardanoWasm.Address, publicKeyCose: CardanoWasm.PublicKey) => {
   const checkAddress = CardanoWasm.Address.from_bech32(address);
   if (addressCose.to_bech32() !== checkAddress.to_bech32()) return false;
   // check if BaseAddress
   try {
     const baseAddress = CardanoWasm.BaseAddress.from_address(addressCose);
     //reconstruct address
-    const paymentKeyHash = publicKeyCose.hash();
-    const stakeKeyHash = baseAddress.stake_cred().to_keyhash();
+    const paymentKeyHash = publicKeyCose.hash().to_hex();
+    const stakeKeyHash = baseAddress!.stake().as_pub_key()!.to_hex();
     const reconstructedAddress = CardanoWasm.BaseAddress.new(
       checkAddress.network_id(),
-      CardanoWasm.StakeCredential.from_keyhash(paymentKeyHash),
-      CardanoWasm.StakeCredential.from_keyhash(stakeKeyHash)
+      CardanoWasm.Credential.from_cbor_hex(paymentKeyHash),
+      CardanoWasm.Credential.from_cbor_hex(stakeKeyHash)
+
     );
     if (
       checkAddress.to_bech32() !== reconstructedAddress.to_address().to_bech32()
@@ -315,14 +321,15 @@ const verifyAddress = (address, addressCose, publicKeyCose) => {
   // check if RewardAddress
   try {
     //reconstruct address
-    const stakeKeyHash = publicKeyCose.hash();
+    const stakeKeyHash = publicKeyCose.hash().to_hex();
     const reconstructedAddress = CardanoWasm.RewardAddress.new(
       checkAddress.network_id(),
-      CardanoWasm.StakeCredential.from_keyhash(stakeKeyHash)
+      CardanoWasm.Credential.from_cbor_hex(stakeKeyHash)
     );
     if (
       checkAddress.to_bech32() !== reconstructedAddress.to_address().to_bech32()
     )
+
       return false;
 
     return true;
