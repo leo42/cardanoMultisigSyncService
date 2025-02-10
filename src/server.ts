@@ -6,17 +6,18 @@ const http = require('http');
 const { Server } = require("socket.io");
 const axios = require('axios');
 const { MongoClient } = require("mongodb");
-import CardanoWasm from "@dcspark/cardano-multiplatform-lib-nodejs";
+import * as CardanoWasm from "@dcspark/cardano-multiplatform-lib-nodejs";
 const MS = require('@emurgo/cardano-message-signing-nodejs');
 const cors = require('cors');
-const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://127.0.0.1:27017";
+const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://localhost:27017/";
+
+
 //const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=secrets/mongo.pem";
 const client = new MongoClient(uri,{
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
   retryWrites: true
 });
 
+console.log("uri", uri);
 const connection = client.connect();
 const LEYWAY = 1000 * 10; // 10 seconds
 var transactions ;
@@ -86,11 +87,36 @@ const server = http.createServer(app);
 const io = new Server(server, {cors: {origin: "*"}});
 
 
-connection.then(() => {
+connection.then(async () => {
   console.log("Connected correctly to server");
-  transactions= client.db('MWallet').collection("transactions");
-  users = client.db('MWallet').collection("Users");
-  wallets = client.db('MWallet').collection("wallets");
+
+  const db = client.db('MWallet');
+  if (!db) {
+    await client.db('MWallet').createCollection("transactions");
+  
+  }
+  
+
+
+  // Check and initialize collections if they do not exist
+  const collections = await db.listCollections().toArray();
+  const collectionNames = collections.map(col => col.name);
+
+  if (!collectionNames.includes("transactions")) {
+    await db.createCollection("transactions");
+  }
+  transactions = db.collection("transactions");
+
+  if (!collectionNames.includes("Users")) {
+    await db.createCollection("Users");
+  }
+  users = db.collection("Users");
+
+  if (!collectionNames.includes("wallets")) {
+    await db.createCollection("wallets");
+  }
+  wallets = db.collection("wallets");
+  console.log("Collections initialized", users, transactions, wallets);
   watchWallets().catch(console.error);
 }).catch(err => {
   console.log(err.stack);
@@ -120,7 +146,6 @@ process.on("SIGINT", () => {
 let verification = new Map();
 let subscriptions = new Map();
 //console.log(config.Ed25519KeyHash)
-
 
 main()
   

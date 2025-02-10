@@ -28,6 +28,7 @@
     "express": "^4.18.2",
     "lucid-cardano": "^0.10.7",
     "mongodb": "^6.1.0",
-    "socket.io": "^4.7.2"
+    "socket.io": "^4.7.2",
+    "tsc": "^2.0.4"
   }
 }
