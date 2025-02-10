@@ -40,23 +40,27 @@ app.post('/api/wallet', function(req, res) {
 
 
 app.post('/api/transaction', function(req, res) {
-  try{
-    const data = req.body
-    const tx = CardanoWasm.Transaction.from_cbor_hex( data.tx )
+  try {
+    const data = req.body;
+    const tx = CardanoWasm.Transaction.from_cbor_hex(data.tx);
     const txBody = tx.body();
-    const txWallet = walletHash(data.wallet)
-    const txBodyBytes = txBody.to_canonical_cbor_bytes();
-    const txBodyHash = crypto.createHash('sha256').update(txBodyBytes).digest();
 
-    // Convert the hash to a Uint8Array
-    const txBodyHashArray = new Uint8Array(txBodyHash);
+    // Calculate the hash of the transaction body
+    const txBodyHash = CardanoWasm.hash_transaction(txBody);
 
-    const signerAddedwitness =  CardanoWasm.TransactionWitnessSet.from_cbor_hex(data.sigAdded)
-    const sigAddedSigner = signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().hash().to_hex()!;
+    const signerAddedwitness = CardanoWasm.TransactionWitnessSet.from_cbor_hex(data.sigAdded);
+    const vkeyWitness = signerAddedwitness.vkeywitnesses()?.get(0);
 
-    
-    console.log( tx.body().to_cbor_bytes(), signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)
-    if(!signerAddedwitness.vkeywitnesses()?.get(0)?.vkey().verify(txBodyHashArray, signerAddedwitness.vkeywitnesses()?.get(0)?.ed25519_signature()!)){
+    if (!vkeyWitness) {
+      console.log('No vkey witness found');
+      return res.status(400).send('Invalid witness data');
+    }
+
+    const publicKey = vkeyWitness.vkey();
+    const signature = vkeyWitness.ed25519_signature();
+
+    // Verify the signature against the transaction body hash
+    if (!publicKey.verify(txBodyHash.to_raw_bytes(), signature)) {
       console.log('Invalid signature');
       return
     }
@@ -68,19 +72,22 @@ app.post('/api/transaction', function(req, res) {
 
   
     
-      if(getMemebers(data.wallet).filter((member) => sigAddedSigner === member).length === 0){
+      if(getMemebers(data.wallet).filter((member) => publicKey.hash().to_hex() === member).length === 0){
         console.log('Signer not member of wallet');
         return
       }
+
     const required_signers = tx.body().to_js_value().required_signers
     transactions.findOne({ hash: CardanoWasm.hash_transaction(tx.body()).to_hex() }).then((existingTx) => {
       const existingMembersToUpdate = existingTx ? existingTx.membersToUpdate || [] : [];
       const existingSignatures = existingTx ? existingTx.signatures || {} : {};
-      const membersToUpdate = required_signers.filter((member) => member !== sigAddedSigner).concat(existingMembersToUpdate);
-      const signatures = existingSignatures.hasOwnProperty(sigAddedSigner) ? existingSignatures : {...existingSignatures, [sigAddedSigner]: data.sigAdded};
+      const membersToUpdate = required_signers.filter((member) => member !== publicKey.hash().to_hex()).concat(existingMembersToUpdate);
+      const signatures = existingSignatures.hasOwnProperty(publicKey.hash().to_hex()) ? existingSignatures : {...existingSignatures, [publicKey.hash().to_hex()]: data.sigAdded};
       // if the transaction exist update the signatures and add to the membersToUpdate list
-      transactions.updateOne( {hash: CardanoWasm.hash_transaction(tx.body()).to_hex()}, { $set : { hash:  CardanoWasm.hash_transaction(tx.body()).to_hex() , transaction :  tx.to_canonical_cbor_hex() , signatures: signatures ,  requiredSigners : tx.body().to_js_value().required_signers , membersToUpdate:membersToUpdate  , lastUpdate : Date.now(), wallet: txWallet }}, {upsert: true})
+
+      transactions.updateOne( {hash: CardanoWasm.hash_transaction(tx.body()).to_hex()}, { $set : { hash:  CardanoWasm.hash_transaction(tx.body()).to_hex() , transaction :  tx.to_canonical_cbor_hex() , signatures: signatures ,  requiredSigners : tx.body().to_js_value().required_signers , membersToUpdate:membersToUpdate  , lastUpdate : Date.now(), wallet: walletHash(data.wallet) }}, {upsert: true})
     })
+
     }catch(e){
         console.log(e)
       }
