@@ -56,35 +56,45 @@ try {
   process.exit(1);
 }
 
-// Build connection string - if MONGO_CONNECTION_STRING is provided, use it as-is
-// Otherwise, build it with the certificate path
+// Build connection string - for mongodb+srv://, TLS options should be in client options, not URI
 let uri: string;
-let clientOptions: any = {
-  retryWrites: true
-};
-
 if (process.env.MONGO_CONNECTION_STRING) {
-  // If connection string is provided via env, use it as-is
-  // But still add certificate path to options if not in the URI
-  uri = process.env.MONGO_CONNECTION_STRING;
-  if (!uri.includes('tlsCertificateKeyFile')) {
-    // Add certificate to client options if not in connection string
-    clientOptions.tlsCertificateKeyFile = actualCertPath;
-    clientOptions.tls = true;
-    clientOptions.authMechanism = 'MONGODB-X509';
-    clientOptions.authSource = '$external';
-  }
+  // Remove TLS/auth options from connection string if present (they'll be in client options)
+  let cleanUri = process.env.MONGO_CONNECTION_STRING
+    .replace(/[?&]tlsCertificateKeyFile=[^&]*/g, '')
+    .replace(/[?&]authMechanism=[^&]*/g, '')
+    .replace(/[?&]authSource=[^&]*/g, '')
+    .replace(/[?&]tls=[^&]*/g, '');
+  
+  // Clean up any double separators or trailing separators
+  cleanUri = cleanUri.replace(/[&]+/g, '&').replace(/[?&]$/, '').replace(/\?&/, '?');
+  uri = cleanUri;
 } else {
-  // Build URI with certificate path
-  uri = `mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=${encodeURIComponent(actualCertPath)}`;
-  // For connection strings with TLS params, minimal client options
-  clientOptions.retryWrites = true;
+  // Build clean URI without TLS options (they go in client options)
+  uri = 'mongodb+srv://cluster0.9drtorw.mongodb.net/test';
 }
+
+// Configure MongoDB client with TLS options
+// For mongodb+srv://, TLS options MUST be in client options, not connection string
+const clientOptions: any = {
+  retryWrites: true,
+  tls: true,
+  tlsCertificateKeyFile: actualCertPath,
+  authMechanism: 'MONGODB-X509',
+  authSource: '$external'
+};
 
 const client = new MongoClient(uri, clientOptions);
 
-console.log("uri", uri.replace(/tlsCertificateKeyFile=[^&]+/, 'tlsCertificateKeyFile=***'));
-console.log("certificate path", actualCertPath);
+console.log("MongoDB connection URI:", uri);
+console.log("Certificate path:", actualCertPath);
+console.log("TLS options configured:", {
+  tls: clientOptions.tls,
+  authMechanism: clientOptions.authMechanism,
+  authSource: clientOptions.authSource,
+  hasCertificateKeyFile: !!clientOptions.tlsCertificateKeyFile
+});
+
 const connection = client.connect();
 const LEYWAY = 1000 * 10; // 10 seconds
 var transactions ;
@@ -171,7 +181,7 @@ const io = new Server(server, {cors: {origin: "*"}});
 
 
 connection.then(async () => {
-  console.log("Connected correctly to server");
+  console.log("Connected correctly to MongoDB server");
 
   const db = client.db('MWallet');
   if (!db) {
@@ -202,7 +212,23 @@ connection.then(async () => {
   console.log("Collections initialized", users, transactions, wallets);
   watchWallets().catch(console.error);
 }).catch(err => {
-  console.log(err.stack);
+  console.error("MongoDB connection failed:");
+  console.error("Error name:", err.name);
+  console.error("Error message:", err.message);
+  if (err.stack) {
+    console.error("Stack trace:", err.stack);
+  }
+  
+  // Provide helpful troubleshooting information
+  if (err.message && err.message.includes('SSL') || err.message && err.message.includes('TLS')) {
+    console.error("\nTroubleshooting X.509 authentication:");
+    console.error("1. Verify the certificate file contains both certificate and private key");
+    console.error("2. Ensure the certificate's CN (Common Name) matches your MongoDB username");
+    console.error("3. Check that the certificate hasn't expired");
+    console.error("4. Verify the certificate was issued by a CA trusted by MongoDB Atlas");
+    console.error("5. Ensure the MongoDB user was created with X.509 authentication");
+  }
+  
   process.exit(1);
 });
 
