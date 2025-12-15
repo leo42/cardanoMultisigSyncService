@@ -11,13 +11,80 @@ const MS = require('@emurgo/cardano-message-signing-nodejs');
 const cors = require('cors');
 //const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb://localhost:27017/";
 
+// Determine certificate path - use absolute path in Docker, relative for local dev
+const certPath = process.env.MONGO_CERT_PATH || '/usr/src/app/secrets/mongo.pem';
+const localCertPath = 'secrets/mongo.pem';
 
-const uri =  process.env.MONGO_CONNECTION_STRING ||  "mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=secrets/mongo.pem"
-const client = new MongoClient(uri,{
+// Check if certificate file exists
+let actualCertPath = certPath;
+if (!fs.existsSync(certPath) && fs.existsSync(localCertPath)) {
+  actualCertPath = localCertPath;
+}
+
+if (!fs.existsSync(actualCertPath)) {
+  console.error(`MongoDB certificate file not found at ${actualCertPath}`);
+  console.error('Please ensure the certificate file exists and is accessible.');
+  process.exit(1);
+}
+
+// Verify certificate file is readable and has valid format
+try {
+  const certStats = fs.statSync(actualCertPath);
+  console.log(`Certificate file found: ${actualCertPath} (${certStats.size} bytes)`);
+  
+  // Check if file has valid PEM format (should contain CERTIFICATE and PRIVATE KEY)
+  const certContent = fs.readFileSync(actualCertPath, 'utf8');
+  if (!certContent.includes('-----BEGIN')) {
+    console.error(`Certificate file at ${actualCertPath} does not appear to be in PEM format`);
+    console.error('MongoDB X.509 certificates must be in PEM format with both certificate and private key');
+    process.exit(1);
+  }
+  
+  const hasCertificate = certContent.includes('-----BEGIN CERTIFICATE-----');
+  const hasPrivateKey = certContent.includes('-----BEGIN PRIVATE KEY-----') || 
+                       certContent.includes('-----BEGIN RSA PRIVATE KEY-----') ||
+                       certContent.includes('-----BEGIN EC PRIVATE KEY-----');
+  
+  if (!hasCertificate || !hasPrivateKey) {
+    console.warn(`Certificate file may be incomplete:`);
+    console.warn(`  Has certificate: ${hasCertificate}`);
+    console.warn(`  Has private key: ${hasPrivateKey}`);
+    console.warn(`  MongoDB X.509 requires both certificate and private key in the same file`);
+  }
+} catch (err: any) {
+  console.error(`Cannot access certificate file at ${actualCertPath}:`, err.message);
+  process.exit(1);
+}
+
+// Build connection string - if MONGO_CONNECTION_STRING is provided, use it as-is
+// Otherwise, build it with the certificate path
+let uri: string;
+let clientOptions: any = {
   retryWrites: true
-});
+};
 
-console.log("uri", uri);
+if (process.env.MONGO_CONNECTION_STRING) {
+  // If connection string is provided via env, use it as-is
+  // But still add certificate path to options if not in the URI
+  uri = process.env.MONGO_CONNECTION_STRING;
+  if (!uri.includes('tlsCertificateKeyFile')) {
+    // Add certificate to client options if not in connection string
+    clientOptions.tlsCertificateKeyFile = actualCertPath;
+    clientOptions.tls = true;
+    clientOptions.authMechanism = 'MONGODB-X509';
+    clientOptions.authSource = '$external';
+  }
+} else {
+  // Build URI with certificate path
+  uri = `mongodb+srv://cluster0.9drtorw.mongodb.net/test?authMechanism=MONGODB-X509&authSource=%24external&tls=true&tlsCertificateKeyFile=${encodeURIComponent(actualCertPath)}`;
+  // For connection strings with TLS params, minimal client options
+  clientOptions.retryWrites = true;
+}
+
+const client = new MongoClient(uri, clientOptions);
+
+console.log("uri", uri.replace(/tlsCertificateKeyFile=[^&]+/, 'tlsCertificateKeyFile=***'));
+console.log("certificate path", actualCertPath);
 const connection = client.connect();
 const LEYWAY = 1000 * 10; // 10 seconds
 var transactions ;
