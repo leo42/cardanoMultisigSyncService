@@ -28,12 +28,13 @@ if (!fs.existsSync(actualCertPath)) {
 }
 
 // Verify certificate file is readable and has valid format
+let certContent: string;
 try {
   const certStats = fs.statSync(actualCertPath);
   console.log(`Certificate file found: ${actualCertPath} (${certStats.size} bytes)`);
   
   // Check if file has valid PEM format (should contain CERTIFICATE and PRIVATE KEY)
-  const certContent = fs.readFileSync(actualCertPath, 'utf8');
+  certContent = fs.readFileSync(actualCertPath, 'utf8');
   if (!certContent.includes('-----BEGIN')) {
     console.error(`Certificate file at ${actualCertPath} does not appear to be in PEM format`);
     console.error('MongoDB X.509 certificates must be in PEM format with both certificate and private key');
@@ -50,6 +51,34 @@ try {
     console.warn(`  Has certificate: ${hasCertificate}`);
     console.warn(`  Has private key: ${hasPrivateKey}`);
     console.warn(`  MongoDB X.509 requires both certificate and private key in the same file`);
+  }
+  
+  // Try to parse the certificate to verify it's valid
+  try {
+    const certMatches = certContent.match(/-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/);
+    if (certMatches && certMatches[1]) {
+      const certBuffer = Buffer.from(certMatches[1].replace(/\s/g, ''), 'base64');
+      // Try to use X509Certificate if available (Node.js 15.6.0+)
+      if (crypto.X509Certificate) {
+        const x509 = new crypto.X509Certificate(certBuffer);
+        console.log(`Certificate parsed successfully:`);
+        console.log(`  Subject: ${x509.subject}`);
+        console.log(`  Issuer: ${x509.issuer}`);
+        console.log(`  Valid from: ${x509.validFrom}`);
+        console.log(`  Valid to: ${x509.validTo}`);
+        // Check if certificate is expired
+        const now = new Date();
+        const validTo = new Date(x509.validTo);
+        if (validTo < now) {
+          console.error(`  ERROR: Certificate has EXPIRED (expired on ${x509.validTo})`);
+        }
+      } else {
+        // Fallback: just verify we can read the certificate
+        console.log(`Certificate format appears valid (X509Certificate API not available in this Node.js version)`);
+      }
+    }
+  } catch (parseErr: any) {
+    console.warn(`Could not parse certificate details: ${parseErr.message}`);
   }
 } catch (err: any) {
   console.error(`Cannot access certificate file at ${actualCertPath}:`, err.message);
@@ -78,10 +107,18 @@ if (process.env.MONGO_CONNECTION_STRING) {
 // For mongodb+srv://, TLS options MUST be in client options, not connection string
 const clientOptions: any = {
   retryWrites: true,
+  // TLS configuration for X.509 authentication
   tls: true,
   tlsCertificateKeyFile: actualCertPath,
+  // Ensure we don't skip certificate validation
+  tlsAllowInvalidCertificates: false,
+  tlsAllowInvalidHostnames: false,
+  // X.509 authentication
   authMechanism: 'MONGODB-X509',
-  authSource: '$external'
+  authSource: '$external',
+  // Additional options that might help
+  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 10000
 };
 
 const client = new MongoClient(uri, clientOptions);
@@ -220,13 +257,36 @@ connection.then(async () => {
   }
   
   // Provide helpful troubleshooting information
-  if (err.message && err.message.includes('SSL') || err.message && err.message.includes('TLS')) {
-    console.error("\nTroubleshooting X.509 authentication:");
-    console.error("1. Verify the certificate file contains both certificate and private key");
-    console.error("2. Ensure the certificate's CN (Common Name) matches your MongoDB username");
-    console.error("3. Check that the certificate hasn't expired");
-    console.error("4. Verify the certificate was issued by a CA trusted by MongoDB Atlas");
-    console.error("5. Ensure the MongoDB user was created with X.509 authentication");
+  if (err.message && (err.message.includes('SSL') || err.message.includes('TLS') || err.message.includes('alert'))) {
+    console.error("\n=== X.509 Authentication Troubleshooting ===");
+    console.error("SSL alert 80 (internal error) typically indicates:");
+    console.error("");
+    console.error("1. CERTIFICATE SUBJECT MISMATCH (MOST COMMON):");
+    console.error("   - The certificate's CN (Common Name) MUST exactly match your MongoDB username");
+    console.error("   - Example: If your MongoDB user is 'CN=myuser', the cert CN must be 'myuser'");
+    console.error("   - Check certificate subject in the logs above");
+    console.error("   - Verify MongoDB user: db.getUser('<username>') in MongoDB shell");
+    console.error("");
+    console.error("2. CERTIFICATE FORMAT:");
+    console.error("   - Must contain both certificate AND private key in PEM format");
+    console.error("   - Private key should be unencrypted (no passphrase)");
+    console.error("   - File should have proper line endings (LF or CRLF)");
+    console.error("");
+    console.error("3. CERTIFICATE VALIDITY:");
+    console.error("   - Check expiration date in certificate details above");
+    console.error("   - Ensure certificate is not expired");
+    console.error("");
+    console.error("4. CERTIFICATE CHAIN:");
+    console.error("   - MongoDB Atlas may require intermediate CA certificates");
+    console.error("   - Try including CA certificates in the PEM file if available");
+    console.error("");
+    console.error("5. MONGODB USER CONFIGURATION:");
+    console.error("   - User must be created with X.509 authentication");
+    console.error("   - Command: db.createUser({ user: '<CN from cert>', roles: [...], mechanisms: ['MONGODB-X509'] })");
+    console.error("");
+    console.error("6. FILE PERMISSIONS:");
+    console.error("   - Certificate file must be readable by the application");
+    console.error("   - Check file permissions: ls -l " + actualCertPath);
   }
   
   process.exit(1);
