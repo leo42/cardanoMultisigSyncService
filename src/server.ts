@@ -142,7 +142,7 @@ var users;
 
 app.use(express.json());
 
-const allowedOrigins = ['https://app.keypact.io', 'https://app.broclan.io'];
+const allowedOrigins = [ 'http://localhost:8080', "https://beta.keypact.io" ,'https://app.keypact.io', 'https://app.broclan.io', ];
 
 app.use(cors({
   origin: (origin, callback) => {
