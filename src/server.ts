@@ -142,7 +142,19 @@ var users;
 
 app.use(express.json());
 
-app.use(cors());
+const allowedOrigins = ['https://app.keypact.io', 'https://app.broclan.io'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 
 app.post('/api/wallet', function(req, res) {
   console.log(req.body)
@@ -214,8 +226,13 @@ app.post('/api/transaction', function(req, res) {
 
 
 const server = http.createServer(app);
-const io = new Server(server, {cors: {origin: "*"}});
-
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
 
 connection.then(async () => {
   console.log("Connected correctly to MongoDB server");
